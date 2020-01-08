@@ -4,6 +4,8 @@ import sys
 sys.path = ['/usr/lib/python3/dist-packages', '/home/danya/.local/lib/python3.7/site-packages'] + sys.path
 import serial
 import traceback
+import time
+import threading
 
 PORT_ADDR = '/dev/ttyUSB0'
 IMAGE_NAME = 'LED strip texture'
@@ -52,9 +54,12 @@ class ArduinoTextureUploadOperator(bpy.types.Operator):
             return {'CANCELLED'}
 
         if event.type == 'TIMER':
-            self.write_pixel(self.index, 0)
+            print('Timer tick!')
+            self.write_pixel(self.index)
             self.index += 1
-            if self.index > self.img.size[0]:
+            if self.index >= self.img.size[1]:
+                self.serial_handle.write(b'-1       0  0   0\n')
+                self.serial_handle.close()
                 return {'FINISHED'}
             return {'RUNNING_MODAL'}
 
@@ -62,6 +67,7 @@ class ArduinoTextureUploadOperator(bpy.types.Operator):
 
     def execute(self, context):
         props = context.scene.arduino_props
+        self.lock = threading.Lock()
         try:
             self.serial_handle = serial.Serial(props.port_address, props.port_baudrate)
         except:
@@ -70,17 +76,17 @@ class ArduinoTextureUploadOperator(bpy.types.Operator):
         if self.img is None:
             self.report({'ERROR'}, 'Texture loading error, has it not been inited?')
             return {'CANCELLED'}
-        if True: # do send entire texture at once or with a timer? 
+        if False: # do send entire texture at once or with a timer? 
             try:
-                for i in range(self.img.width):
-                    self.write_pixel(0,i)
+                for i in range(self.img.size[1]):
+                    self.write_pixel(i)
                 return {'FINISHED'}
             except:
                 self.report({'ERROR'}, 'Error while transmitting texture:\n'+traceback.format_exc())
                 return {'CANCELLED'}
         else:
             wm = context.window_manager
-            self._timer = wm.event_timer_add(0.01, window=context.window)
+            self._timer = wm.event_timer_add(0.001, window=context.window)
             self.index = 0
             wm.modal_handler_add(self)
             return {'RUNNING_MODAL'}
@@ -90,22 +96,25 @@ class ArduinoTextureUploadOperator(bpy.types.Operator):
         wm.event_timer_remove(self._timer)
     
     def get_at(self, x, y):
-        width = self.img.size[0]
-        index = y*width + x
+        index = (y*self.img.size[1] + x)*4
         pixel = [
                  self.img.pixels[index],   # Red
                  self.img.pixels[index+1], # Green
                  self.img.pixels[index+2], # Blue
                  self.img.pixels[index+3]  # Alpha
                 ]
+        print(pixel)
+        pixel = [int(255*i) for i in pixel]
         return pixel
     
-    def write_pixel(self, x, y):
-        pix = self.get_at(x,y)
-        self.serial_handle.write(pix[0])
-        self.serial_handle.write(pix[1])
-        self.serial_handle.write(pix[2])
-
+    def to_bytes(self, position, color):
+        return bytes(str(position), 'ascii') + b'      ' + bytes('         '.join(map(str, color[:-1])), 'ascii')+ b'                          \n'
+    def write_pixel(self, pos):
+        pix = self.get_at(pos,0)
+        write = self.to_bytes(pos, pix)
+        print(write)
+        with self.lock:
+            self.serial_handle.write(write)
 
 class ArduinoCreateImage(bpy.types.Operator):
     bl_label = "Create Image from size"
